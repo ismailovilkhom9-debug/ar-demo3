@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>AR nishon o'yini</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #111;
+                 touch-action: none; font-family: sans-serif; }
+    #cam { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+    #view { position: fixed; inset: 0; perspective: 350px; overflow: hidden; }
+    #world { position: absolute; left: 50%; top: 50%; width: 0; height: 0; transform-style: preserve-3d; }
+    .obj { position: absolute; left: 0; top: 0; transform-style: preserve-3d; }
+    .tg { position: absolute; width: 130px; height: 130px; margin: -65px 0 0 -65px; border-radius: 50%;
+          background: radial-gradient(circle at 35% 30%, #fff 0 8%, #ff5252 9% 35%, #fff 36% 50%, #ff5252 51% 70%, #b71c1c 71%);
+          box-shadow: 0 0 25px rgba(255,82,82,.9); animation: pulse .8s ease-in-out infinite alternate; }
+    .tg.pop { animation: pop .3s forwards; }
+    @keyframes pulse { from { transform: scale(.9); } to { transform: scale(1.1); } }
+    @keyframes pop { to { transform: scale(2.2); opacity: 0; } }
+
+    #cross { position: fixed; left: 50%; top: 50%; width: 60px; height: 60px; margin: -30px;
+             border: 3px solid #0f0; border-radius: 50%; z-index: 5; pointer-events: none; }
+    #cross::before, #cross::after { content: ""; position: absolute; background: #0f0; }
+    #cross::before { left: 50%; top: -8px; width: 3px; height: 76px; margin-left: -1.5px; }
+    #cross::after { top: 50%; left: -8px; height: 3px; width: 76px; margin-top: -1.5px; }
+    #cross.miss { border-color: #f00; }
+    #hud { position: fixed; top: 8px; left: 8px; right: 8px; z-index: 6; display: flex;
+           justify-content: space-between; color: #fff; font-weight: bold; font-size: 20px;
+           text-shadow: 0 0 5px #000; pointer-events: none; }
+    #msg { position: fixed; left: 10px; right: 10px; top: 30%; z-index: 7; color: #fff; text-align: center;
+           background: rgba(0,0,0,.75); padding: 16px; border-radius: 12px; font-size: 20px; display: none; }
+    .btn { position: fixed; bottom: 24px; z-index: 9999; padding: 14px 20px; font-size: 18px;
+           border: 0; border-radius: 12px; color: #fff; background: #2196F3; }
+    #start { left: 50%; transform: translateX(-50%); }
+    #fire { right: 16px; display: none; background: #f44336; padding: 22px 28px; font-size: 22px; }
+    #center { left: 16px; display: none; background: #4CAF50; }
+  </style>
+</head>
+<body>
+  <video id="cam" autoplay playsinline muted></video>
+  <div id="view"><div id="world"></div></div>
+  <div id="cross"></div>
+  <div id="hud"><span id="score">Ball: 0</span><span id="sens">Sensor: -</span><span id="time">40</span></div>
+  <div id="msg"></div>
+  <button class="btn" id="start">Boshlash</button>
+  <button class="btn" id="center">Markazlash</button>
+  <button class="btn" id="fire">OT!</button>
+
+<script>
+  var R = 500, DURATION = 40, MAXT = 3;
+  var world = document.getElementById('world');
+  var cross = document.getElementById('cross');
+  var msg = document.getElementById('msg');
+  var h = 0, p = 0, th = 0, tp = 0, offset = 0, sensor = false;
+  var running = false, score = 0, left = DURATION, targets = [], timerId = null;
+  var best = 0;
+  try { best = parseInt(localStorage.getItem('ar3best') || '0', 10) || 0; } catch (e) {}
+
+  function norm(a) { return ((a % 360) + 360) % 360; }
+
+  function onOri(e) {
+    var hd;
+    if (typeof e.webkitCompassHeading === 'number') hd = e.webkitCompassHeading;
+    else if (e.alpha !== null && e.alpha !== undefined) hd = 360 - e.alpha;
+    else return;
+    if (e.beta === null || e.beta === undefined) return;
+    sensor = true;
+    th = hd;
+    tp = Math.max(-80, Math.min(80, e.beta - 90));
+  }
+
+  function place(o, az, el) {
+    var y = -Math.sin(el * Math.PI / 180) * R * 0.6;
+    o.style.transform = 'rotateY(' + (-az) + 'deg) translateZ(' + (-R) + 'px) translateY(' + y + 'px)';
+  }
+
+  function spawn() {
+    var cur = norm(h - offset);
+    var az = norm(cur + (Math.random() * 160 - 80));
+    var el = Math.random() * 50 - 15;
+    var o = document.createElement('div'); o.className = 'obj';
+    var t = document.createElement('div'); t.className = 'tg';
+    o.appendChild(t); world.appendChild(o); place(o, az, el);
+    var obj = { o: o, t: t, az: az, el: el, born: Date.now(), dead: false };
+    t.addEventListener('click', function () { if (running) kill(obj); });
+    targets.push(obj);
+  }
+
+  function remove(obj) {
+    obj.dead = true;
+    setTimeout(function () { if (obj.o.parentNode) obj.o.parentNode.removeChild(obj.o); }, 300);
+    targets = targets.filter(function (x) { return x !== obj; });
+  }
+
+  function kill(obj) {
+    if (obj.dead) return;
+    score++;
+    obj.t.classList.add('pop');
+    remove(obj);
+    if (running) spawn();
+    document.getElementById('score').textContent = 'Ball: ' + score;
+  }
+
+  function isHit(obj) {
+    var da = Math.abs(((obj.az - norm(h - offset) + 540) % 360) - 180);
+    var elDeg = Math.atan(0.6 * Math.sin(obj.el * Math.PI / 180)) * 180 / Math.PI;
+    return da < 15 && Math.abs(p - elDeg) < 15;
+  }
+
+  function fire() {
+    if (!running) return;
+    for (var i = 0; i < targets.length; i++) {
+      if (isHit(targets[i])) { kill(targets[i]); return; }
+    }
+    cross.classList.add('miss');
+    setTimeout(function () { cross.classList.remove('miss'); }, 200);
+  }
+
+  function loop() {
+    var d = ((th - h + 540) % 360) - 180;
+    h += d * 0.2;
+    p += (tp - p) * 0.2;
+    world.style.transform = 'rotateX(' + p + 'deg) rotateY(' + (h - offset) + 'deg)';
+    document.getElementById('sens').textContent = sensor ? 'Sensor: OK' : 'Sensor: yo\'q';
+    if (running) {
+      var now = Date.now();
+      targets.slice().forEach(function (x) { if (now - x.born > 5000) { remove(x); spawn(); } });
+    }
+    requestAnimationFrame(loop);
+  }
+  loop();
+
+  function endGame() {
+    running = false;
+    clearInterval(timerId);
+    targets.slice().forEach(remove);
+    if (score > best) { best = score; try { localStorage.setItem('ar3best', best); } catch (e) {} }
+    msg.innerHTML = 'Vaqt tugadi!<br>Natijangiz: <b>' + score + '</b><br>Eng yaxshi: <b>' + best + '</b>';
+    msg.style.display = 'block';
+    var s = document.getElementById('start');
+    s.textContent = 'Qayta o\'ynash'; s.style.display = 'block';
+    document.getElementById('fire').style.display = 'none';
+  }
+
+  function startGame() {
+    score = 0; left = DURATION; running = true;
+    document.getElementById('score').textContent = 'Ball: 0';
+    document.getElementById('time').textContent = left;
+    msg.style.display = 'none';
+    document.getElementById('start').style.display = 'none';
+    document.getElementById('fire').style.display = 'block';
+    for (var i = 0; i < MAXT; i++) spawn();
+    timerId = setInterval(function () {
+      left--; document.getElementById('time').textContent = left;
+      if (left <= 0) endGame();
+    }, 1000);
+  }
+
+  // Sensor yo'q bo'lsa: barmoq bilan aylantirish
+  var drag = false, lx = 0;
+  document.getElementById('view').addEventListener('pointerdown', function (e) { drag = true; lx = e.clientX; });
+  window.addEventListener('pointerup', function () { drag = false; });
+  window.addEventListener('pointermove', function (e) {
+    if (!drag || sensor) return;
+    offset -= (e.clientX - lx) * 0.4; lx = e.clientX;
+  });
+
+  document.getElementById('fire').addEventListener('click', fire);
+  document.getElementById('center').addEventListener('click', function () { offset = h; });
+
+  var inited = false;
+  document.getElementById('start').addEventListener('click', async function () {
+    if (!inited) {
+      inited = true;
+      try {
+        if (typeof DeviceOrientationEvent !== 'undefined' &&
+            typeof DeviceOrientationEvent.requestPermission === 'function') {
+          await DeviceOrientationEvent.requestPermission();
+        }
+      } catch (e) {}
+      if ('ondeviceorientationabsolute' in window) {
+        window.addEventListener('deviceorientationabsolute', onOri, true);
+      } else {
+        window.addEventListener('deviceorientation', onOri, true);
+      }
+      try {
+        var stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: 'environment' } }, audio: false });
+        document.getElementById('cam').srcObject = stream;
+      } catch (e) { alert('Kamera xatosi: ' + e.message); }
+      document.getElementById('center').style.display = 'block';
+    }
+    startGame();
+  });
+</script>
+</body>
+</html>
